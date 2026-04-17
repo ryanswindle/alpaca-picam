@@ -1,0 +1,41 @@
+entity: picam
+dll_directories:
+  - "C:\\Program Files\\Common Files\\Princeton Instruments\\Picam\\Runtime"
+  - "C:\\Program Files\\Common Files\\Pleora\\eBUS SDK"
+library: "C:\\Program Files\\Common Files\\Princeton Instruments\\Picam\\Runtime\\Picam.dll"
+server:
+  host: 0.0.0.0
+  port: 5900
+log_level: DEBUG
+devices:
+  - entity: Cosmos8k_1
+    device_number: 0
+    demo:
+      enable: false
+      model: 2807
+    serial_number: "X090002624"
+    defaults:
+      temperature: 15
+      readout_mode: 0
+      binning: 1
+    full_well_capacity:
+      Low: 14000
+      High: 100000
+    readout_modes:
+      #           [AdcAnalogGain, AdcQuality, AdcBitDepth, PixelFormat, ReadoutControlMode]
+      - label: "16bit-High-Rolling_Shutter" # CMS
+        values: [3, 1, 16, 1, 8]
+      - label: "18bit-HDR-Rolling_Shutter" # HDR
+        values: [-1, 5, 18, 2, 8]
+      - label: "16bit-Low-Global_Shutter"
+        values: [1, 1, 16, 1, 10]
+      - label: "16bit-Low-Rolling_Shutter"
+        values: [1, 1, 16, 1, 8]
+      - label: "14bit-Low-Rolling_Shutter"
+        values: [1, 4, 14, 1, 8]
+      - label: "14bit-High-Rolling_Shutter"
+        values: [3, 4, 14, 1, 8]
+      - label: "14bit-Low-Global_Shutter"
+        values: [1, 4, 14, 1, 10]
+      - label: "14bit-High-Global_Shutter"
+        values: [3, 4, 14, 1, 10]
