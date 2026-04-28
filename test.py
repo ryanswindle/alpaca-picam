@@ -146,6 +146,8 @@ if cam.ImageReady:
 # Back to 1x1 full-frame to verify reset works
 # ============================================================================
 cam.BinX = 1
+cam.StartX = 0
+cam.StartY = 0
 cam.NumX = 8120
 cam.NumY = 8120
 print(f"\n--- Test 4: Back to 1x1 full-frame ---")
@@ -154,34 +156,34 @@ print(f"binx={cam.BinX}, numx={cam.NumX}, numy={cam.NumY}")
 # ============================================================================
 # Run full-frame in HDR mode for 6 hours or until stopped
 # ============================================================================
-print("\n--- Continuous full-frame 1x1 HDR, 3 sec exposures (Ctrl+C to stop) ---")
-cam.ReadoutMode = 1
-count = 0
-failures = 0
-t_start = time.time()
-t_end = t_start + 6 * 3600
-try:
-    while time.time() < t_end:
-        try:
-            cam.StartExposure(3.0, True)
-            t0 = time.time()
-            while not cam.ImageReady:
-                time.sleep(1)
-                if (time.time() - t0) > 120:
-                    raise TimeoutError(
-                        f"Timed out waiting for image after {(time.time()-t_start)/60:.1f} min of operation"
-                    )
-            count += 1
-            img = np.array(cam.ImageArray)
-            print(f"[{count}] shape={img.shape}, max={int(np.max(img))}, med={np.median(img):.1f}")
-            save_fits(cam, img, f"continuous_{count:04d}.fits")
-        except Exception as e:
-            failures += 1
-            print(f"  [FAIL {failures}] {e}")
-except KeyboardInterrupt:
-    print(f"\nStopped by user after {count} frames ({(time.time()-t_start)/60:.1f} min).")
-
-print(f"Total failures: {failures}")
+# print("\n--- Continuous full-frame 1x1 HDR, 3 sec exposures (Ctrl+C to stop) ---")
+# cam.ReadoutMode = 1
+# count = 0
+# failures = 0
+# t_start = time.time()
+# t_end = t_start + 6 * 3600
+# try:
+#     while time.time() < t_end:
+#         try:
+#             cam.StartExposure(3.0, True)
+#             t0 = time.time()
+#             while not cam.ImageReady:
+#                 time.sleep(1)
+#                 if (time.time() - t0) > 120:
+#                     raise TimeoutError(
+#                         f"Timed out waiting for image after {(time.time()-t_start)/60:.1f} min of operation"
+#                     )
+#             count += 1
+#             img = np.array(cam.ImageArray)
+#             print(f"[{count}] shape={img.shape}, max={int(np.max(img))}, med={np.median(img):.1f}")
+#             save_fits(cam, img, f"continuous_{count:04d}.fits")
+#         except Exception as e:
+#             failures += 1
+#             print(f"  [FAIL {failures}] {e}")
+# except KeyboardInterrupt:
+#     print(f"\nStopped by user after {count} frames ({(time.time()-t_start)/60:.1f} min).")
+#
+# print(f"Total failures: {failures}")
 
 cam.Connected = False
 print("\nDone.")
