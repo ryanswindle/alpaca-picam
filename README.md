@@ -24,7 +24,7 @@ which has been tested up to version 5.6.13.2512.
 | CanSetCCDTemperature | ✔         |
 | CanStopExposure      | ✘         |
 | CCDTemperature       | ✔         |
-| CoolerOn             | ✘         |
+| CoolerOn             | ✔         |
 | CoolerPower          | ✘         |
 | ElectronsPerADU      | ✘         |
 | ExposureMax          | ✔         |

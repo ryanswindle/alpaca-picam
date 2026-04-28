@@ -382,18 +382,14 @@ async def ccdtemperature(devnum: int, params: AlpacaGetParams = Depends()):
 
 @router.get("/{devnum}/cooleron", summary="")
 async def cooleron_get(devnum: int, params: AlpacaGetParams = Depends()):
-    return PropertyResponse.create(
-        value=None,
-        client_transaction_id=params.client_transaction_id,
-        error=NotImplementedException("CoolerOn"),
-    ).model_dump()
+    device = get_device(devnum)
+    return _connected_property(device, device.cooler_on, params)
 
 
 @router.put("/{devnum}/cooleron", summary="")
 async def cooleron_put(devnum: int, CoolerOn: Annotated[str, Form()], params: AlpacaPutParams = Depends()):
     return MethodResponse.create(
         client_transaction_id=params.client_transaction_id,
-        error=NotImplementedException("CoolerOn"),
     ).model_dump()
 
 

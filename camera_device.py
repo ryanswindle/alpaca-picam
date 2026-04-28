@@ -825,6 +825,10 @@ class CameraDevice:
             return 99.0
 
     @property
+    def cooler_on(self) -> bool:
+        return True
+
+    @property
     def exposure_max(self) -> float:
         return self._exposure_max
 
