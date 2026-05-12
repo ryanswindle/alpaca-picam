@@ -920,8 +920,10 @@ class CameraDevice:
         self._camera_state = CameraState.IDLE
         self._image_ready = False
 
-        # return img
-        return img.astype(np.int32)
+        # Transpose from native (H, W) to ASCOM ImageArray[x, y] = (W, H),
+        # preserving native unsigned dtype (uint16 for 14/16-bit, uint32 for
+        # 18-bit). ascontiguousarray materializes the transpose in one copy.
+        return np.ascontiguousarray(img.T)
 
     def _parse_picam_frame(self, frame, width, height):
         """
