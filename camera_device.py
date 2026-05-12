@@ -920,10 +920,15 @@ class CameraDevice:
         self._camera_state = CameraState.IDLE
         self._image_ready = False
 
-        # Transpose from native (H, W) to ASCOM ImageArray[x, y] = (W, H),
-        # preserving native unsigned dtype (uint16 for 14/16-bit, uint32 for
-        # 18-bit). ascontiguousarray materializes the transpose in one copy.
-        return np.ascontiguousarray(img.T)
+        # Transpose from native (H, W) to ASCOM ImageArray[x, y] = (W, H).
+        # 14/16-bit stays uint16. 18-bit (uint32 native, max 262143) is
+        # reinterpreted losslessly as int32 because alpyca's
+        # ImageArrayElementTypes enum is missing UInt32 — all positive 18-bit
+        # values share the same bit pattern in uint32 and int32.
+        contig = np.ascontiguousarray(img.T)
+        if contig.dtype == np.uint32:
+            return contig.view(np.int32)
+        return contig
 
     def _parse_picam_frame(self, frame, width, height):
         """
