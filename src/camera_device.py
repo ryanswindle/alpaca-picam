@@ -100,8 +100,8 @@ class CameraDevice:
         self._image_ready = False
         self._exposure_complete = Event()
 
-        self._last_exposure_duration: float = 0.0
-        self._last_exposure_start_time: str = ""
+        self._last_exposure_duration: Optional[float] = None
+        self._last_exposure_start_time: Optional[str] = None
         self._exposure_thread: Optional[Thread] = None
 
         self._data = PicamAvailableData()
@@ -227,6 +227,10 @@ class CameraDevice:
             self._connected = True
             self._camera_state = CameraState.IDLE
             self._image_ready = False
+            # A fresh connection has taken no exposures — LastExposure* must
+            # error until the first StartExposure of this session.
+            self._last_exposure_duration = None
+            self._last_exposure_start_time = None
             logger.info(
                 f"Connected to camera: {self._sensor_name} ({self._config.entity})"
             )
@@ -545,15 +549,14 @@ class CameraDevice:
         # Readout mode
         self.readout_mode = defaults.readout_mode
 
-        # ROI (full frame)
-        self._start_x = self._start_y = 0
-        self._num_x, self._num_y = self._camera_x_size, self._camera_y_size
+        # ROI (full frame at the default binning); the hardware ROI is
+        # applied in start_exposure
         self._bin_x = self._bin_y = (
             defaults.binning if defaults.binning in self._available_binnings else 1
         )
-
-        # Binning
-        self.bin_x = defaults.binning
+        self._start_x = self._start_y = 0
+        self._num_x = self._camera_x_size // self._bin_x
+        self._num_y = self._camera_y_size // self._bin_y
 
         # Readout count (single frame)
         try:
@@ -608,10 +611,19 @@ class CameraDevice:
 
     @connected.setter
     def connected(self, value: bool) -> None:
+        # Legacy synchronous semantics: Connected Set must not return until
+        # the attempt completes (Connect()/Disconnect() with Connecting are
+        # the asynchronous path).
         if value and not self._connected:
             self.connect()
+            if self._connect_thread is not None:
+                self._connect_thread.join()
+            if not self._connected:
+                raise RuntimeError("Connect failed (see server log)")
         elif not value and self._connected:
             self.disconnect()
+            if self._disconnect_thread is not None:
+                self._disconnect_thread.join()
 
     @property
     def connecting(self) -> bool:
@@ -620,6 +632,9 @@ class CameraDevice:
     def disconnect(self) -> None:
         if not self._connected and not self._connecting:
             return
+        # Connecting covers both transitions per the Platform 7 async
+        # pattern; the worker clears it when the teardown completes.
+        self._connecting = True
         self._disconnect_thread = Thread(target=self._disconnect_worker, daemon=True)
         self._disconnect_thread.start()
 
@@ -648,32 +663,7 @@ class CameraDevice:
     ######################
     @property
     def bin_x(self) -> int:
-        self._get_roi()
         return self._bin_x
-
-    def _get_roi(self) -> None:
-        """Get current ROI from camera and convert to binned pixels."""
-        try:
-            rois = pointer(PicamRois())
-            picam_call(
-                self.picam.Picam_GetParameterRoisValue,
-                self.handle,
-                c_int(PicamParameter["Rois"]),
-                pointer(rois),
-                operation="Get_Rois",
-            )
-            if rois.contents.roi_count > 0:
-                roi = rois.contents.roi_array[0]
-                self._bin_x = roi.x_binning
-                self._bin_y = roi.y_binning
-                # Convert from unbinned to binned pixels
-                self._start_x = roi.x // self._bin_x
-                self._start_y = roi.y // self._bin_y
-                self._num_x = roi.width // self._bin_x
-                self._num_y = roi.height // self._bin_y
-        except PicamError:
-            logger.warning("Unable to get rois")
-            raise
 
     @bin_x.setter
     def bin_x(self, value: int) -> None:
@@ -683,18 +673,17 @@ class CameraDevice:
         self, start_x=None, num_x=None, bin_x=None, start_y=None, num_y=None, bin_y=None
     ) -> None:
         """
-        Set ROI with proper validation and ordering.
+        Set ROI, stored as given.
 
-        All start/num values are in binned pixels per ASCOM spec.
-        PICam expects unbinned pixels, so we convert accordingly.
+        All start/num values are in binned pixels per ASCOM spec. Binning is
+        validated here; per the ICameraV4 spec the ROI setters accept any
+        value, and validation happens in start_exposure, which must reject an
+        illegal ROI combination and applies the validated ROI to the hardware.
+        When binning changes, ROI is reset to full frame at the new binning.
         """
-        # Start with current values
         bx = bin_x if bin_x is not None else self._bin_x
         by = bin_y if bin_y is not None else self._bin_y
-        sx = start_x if start_x is not None else self._start_x
-        sy = start_y if start_y is not None else self._start_y
-        nx = num_x if num_x is not None else self._num_x
-        ny = num_y if num_y is not None else self._num_y
+        binning_changed = bx != self._bin_x or by != self._bin_y
 
         # Validate binning
         if bx not in self._available_binnings:
@@ -706,62 +695,27 @@ class CameraDevice:
                 f"BinY {by} not in available binnings {self._available_binnings}"
             )
 
-        # Max binned dimensions
-        max_binned_x = self._camera_x_size // bx
-        max_binned_y = self._camera_y_size // by
+        # When binning changes, reset to full frame at new binning
+        if binning_changed:
+            self._bin_x = bx
+            self._bin_y = by
+            self._start_x = 0
+            self._start_y = 0
+            self._num_x = self._camera_x_size // bx
+            self._num_y = self._camera_y_size // by
+            return
 
-        # Validate and clamp start values
-        if sx < 0:
-            sx = 0
-        if sy < 0:
-            sy = 0
-        if sx >= max_binned_x:
-            sx = max_binned_x - 1
-        if sy >= max_binned_y:
-            sy = max_binned_y - 1
-
-        # Validate and clamp num values to fit within remaining space
-        max_nx = max_binned_x - sx
-        max_ny = max_binned_y - sy
-
-        if nx < 1:
-            nx = 1
-        if ny < 1:
-            ny = 1
-        if nx > max_nx:
-            nx = max_nx
-        if ny > max_ny:
-            ny = max_ny
-
-        # Convert to unbinned pixels for PICam
-        picam_x = sx * bx
-        picam_y = sy * by
-        picam_width = nx * bx
-        picam_height = ny * by
-
-        # Set ROI
-        try:
-            roi = PicamRoi(picam_x, picam_width, bx, picam_y, picam_height, by)
-            rois = PicamRois(pointer(roi), 1)
-            picam_call(
-                self.picam.Picam_SetParameterRoisValue,
-                self.handle,
-                c_int(PicamParameter["Rois"]),
-                byref(rois),
-                operation="SetRois",
-            )
-            self._commit_parameters()
-        except PicamError:
-            logger.warning("Unable to set rois")
-            raise
-
-        # Store binned values
-        self._start_x, self._num_x, self._bin_x = sx, nx, bx
-        self._start_y, self._num_y, self._bin_y = sy, ny, by
+        if start_x is not None:
+            self._start_x = start_x
+        if start_y is not None:
+            self._start_y = start_y
+        if num_x is not None:
+            self._num_x = num_x
+        if num_y is not None:
+            self._num_y = num_y
 
     @property
     def bin_y(self) -> int:
-        self._get_roi()
         return self._bin_y
 
     @bin_y.setter
@@ -876,8 +830,8 @@ class CameraDevice:
             operation="Get_PixelFormat",
         )
 
-        # Get the frame size
-        self._get_roi()
+        # Frame size: the stored ROI matches the hardware ROI applied in
+        # start_exposure for this readout
         width, height = self._num_x, self._num_y
 
         # Use pixel_format.value, not self._pixel_format
@@ -918,8 +872,9 @@ class CameraDevice:
         self._last_exposure_duration = actual_exp.value / 1000.0
 
         self._camera_state = CameraState.IDLE
-        self._image_ready = False
 
+        # ImageReady stays true until the next StartExposure — clients may
+        # fetch the image more than once (ImageArray then ImageArrayVariant).
         # Transpose from native (H, W) to ASCOM ImageArray[x, y] = (W, H).
         # 14/16-bit stays uint16. 18-bit (uint32 native, max 262143) is
         # reinterpreted losslessly as int32 because alpyca's
@@ -996,7 +951,6 @@ class CameraDevice:
 
     @property
     def num_x(self) -> int:
-        self._get_roi()
         return self._num_x
 
     @num_x.setter
@@ -1005,7 +959,6 @@ class CameraDevice:
 
     @property
     def num_y(self) -> int:
-        self._get_roi()
         return self._num_y
 
     @num_y.setter
@@ -1111,7 +1064,6 @@ class CameraDevice:
 
     @property
     def start_x(self) -> int:
-        self._get_roi()
         return self._start_x
 
     @start_x.setter
@@ -1120,7 +1072,6 @@ class CameraDevice:
 
     @property
     def start_y(self) -> int:
-        self._get_roi()
         return self._start_y
 
     @start_y.setter
@@ -1137,6 +1088,45 @@ class CameraDevice:
     def start_exposure(self, duration: float, light: bool) -> None:
         if self._camera_state != CameraState.IDLE:
             raise RuntimeError("Camera is not idle")
+        if duration < 0:
+            raise ValueError(f"Duration {duration} must be >= 0")
+        if duration > self._exposure_max:
+            raise ValueError(f"Duration {duration} above ExposureMax {self._exposure_max}")
+        if self._start_x < 0 or self._start_y < 0 or self._num_x < 1 or self._num_y < 1:
+            raise ValueError(
+                f"Invalid ROI: start=({self._start_x}, {self._start_y}) num=({self._num_x}, {self._num_y})"
+            )
+        max_binned_x = self._camera_x_size // self._bin_x
+        max_binned_y = self._camera_y_size // self._bin_y
+        if self._start_x + self._num_x > max_binned_x or self._start_y + self._num_y > max_binned_y:
+            raise ValueError(
+                f"ROI start=({self._start_x}, {self._start_y}) num=({self._num_x}, {self._num_y}) "
+                f"exceeds frame {max_binned_x} x {max_binned_y}"
+            )
+
+        # Apply the validated ROI to the hardware — PICam expects unbinned
+        # pixels, so convert accordingly
+        picam_x = self._start_x * self._bin_x
+        picam_y = self._start_y * self._bin_y
+        picam_width = self._num_x * self._bin_x
+        picam_height = self._num_y * self._bin_y
+        try:
+            roi = PicamRoi(
+                picam_x, picam_width, self._bin_x, picam_y, picam_height, self._bin_y
+            )
+            rois = PicamRois(pointer(roi), 1)
+            picam_call(
+                self.picam.Picam_SetParameterRoisValue,
+                self.handle,
+                c_int(PicamParameter["Rois"]),
+                byref(rois),
+                operation="SetRois",
+            )
+            self._commit_parameters()
+        except PicamError:
+            logger.warning("Unable to set rois")
+            raise
+
         self._image_ready = False
         self._camera_state = CameraState.WAITING
         self._exposure_complete.clear()
@@ -1192,6 +1182,7 @@ class CameraDevice:
                 time.sleep(0.1)
             logger.debug(f"exposure complete")
 
+            self._camera_state = CameraState.IDLE
             self._image_ready = True
         except Exception as e:
             logger.error(f"Exposure failed: {e}")
